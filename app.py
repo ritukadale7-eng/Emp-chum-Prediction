@@ -20,7 +20,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Employee Performance/Prediction Portal</title>
+    <title>Employee Performance Prediction Portal</title>
     <style>
         :root {
             --primary: #4F46E5;
@@ -237,19 +237,34 @@ def home():
     prediction = None
     if request.method == "POST":
         try:
-            # Extract inputs matching the model's feature names
-            education = request.form.get("Education")
+            # Extract raw form inputs
+            education_str = request.form.get("Education")
             joining_year = float(request.form.get("JoiningYear"))
-            city = request.form.get("City")
+            city_str = request.form.get("City")
             payment_tier = float(request.form.get("PaymentTier"))
             age = float(request.form.get("Age"))
-            gender = request.form.get("Gender")
-            ever_benched = request.form.get("EverBenched")
+            gender_str = request.form.get("Gender")
+            ever_benched_str = request.form.get("EverBenched")
             exp_domain = float(
                 request.form.get("ExperienceInCurrentDomain")
             )
 
-            # Construct DataFrame matching the columns order stored in feature_names_in_
+            # Map categorical text strings to numeric values matching standard label encoders
+            # Education: Bachelors=0, Masters=1, PHD=2
+            education_map = {"Bachelors": 0, "Masters": 1, "PHD": 2}
+            # City: Bangalore=0, New Delhi=1, Pune=2 (Alphabetical order convention)
+            city_map = {"Bangalore": 0, "New Delhi": 1, "Pune": 2}
+            # Gender: Female=0, Male=1
+            gender_map = {"Female": 0, "Male": 1}
+            # EverBenched: No=0, Yes=1
+            benched_map = {"No": 0, "Yes": 1}
+
+            education = education_map.get(education_str, 0)
+            city = city_map.get(city_str, 0)
+            gender = gender_map.get(gender_str, 0)
+            ever_benched = benched_map.get(ever_benched_str, 0)
+
+            # Construct DataFrame matching the exact feature order of feature_names_in_
             input_data = pd.DataFrame(
                 [[
                     education,
