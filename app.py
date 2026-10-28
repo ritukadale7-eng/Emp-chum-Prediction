@@ -1,369 +1,299 @@
-
 import os
 import pickle
+import warnings
  
 import pandas as pd
 from flask import Flask, render_template_string, request
  
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "naive.pkl")
+warnings.filterwarnings("ignore")
  
 app = Flask(__name__)
  
+# --------------------------------------------------------------------------
+# Load model
+# --------------------------------------------------------------------------
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "navie.pkl")
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
  
-FEATURES = list(model.feature_names_in_)
+FEATURES = list(model.feature_names_in_)   # exact column order the model expects
+CLASSES = [int(c) for c in model.classes_]  # [0, 1]  ->  0 = stays, 1 = leaves
  
-# Label encodings (alphabetical, as produced by sklearn LabelEncoder).
-# If your training notebook used different codes, change them here.
-EDUCATION = {"Bachelors": 0, "Masters": 1, "PHD": 2}
-CITY = {"Bangalore": 0, "New Delhi": 1, "Pune": 2}
-GENDER = {"Female": 0, "Male": 1}
-BENCHED = {"No": 0, "Yes": 1}
+# --------------------------------------------------------------------------
+# Label-encoded categories (alphabetical, like sklearn's LabelEncoder).
+# Position in each list = the number the model receives. Rename if yours differ.
+# --------------------------------------------------------------------------
+EDUCATION = ["Bachelors", "Masters", "PhD"]
+CITY      = ["Bangalore", "New Delhi", "Pune"]
+GENDER    = ["Female", "Male"]
+BENCHED   = ["No", "Yes"]
  
-DEFAULTS = {
-    "education": "Bachelors",
-    "joining_year": 2015,
-    "city": "Bangalore",
-    "payment_tier": 3,
-    "age": 28,
-    "gender": "Male",
-    "ever_benched": "No",
-    "experience": 2,
-}
  
-PAGE = """
+def opts(lst):
+    return list(enumerate(lst))
+ 
+ 
+# --------------------------------------------------------------------------
+# Form definition
+# --------------------------------------------------------------------------
+SECTIONS = [
+    {"title": "👤 Employee Profile", "fields": [
+        {"name": "Education", "label": "Education", "kind": "select", "options": opts(EDUCATION), "default": 0},
+        {"name": "Gender", "label": "Gender", "kind": "select", "options": opts(GENDER), "default": 1},
+        {"name": "Age", "label": "Age", "kind": "range", "min": 20, "max": 45, "step": 1, "default": 30},
+        {"name": "City", "label": "City", "kind": "select", "options": opts(CITY), "default": 0},
+    ]},
+    {"title": "💼 Job Details", "fields": [
+        {"name": "JoiningYear", "label": "Joining Year", "kind": "select",
+         "options": [(y, str(y)) for y in range(2012, 2019)], "default": 2015},
+        {"name": "PaymentTier", "label": "Payment Tier", "kind": "select",
+         "options": [(1, "Tier 1"), (2, "Tier 2"), (3, "Tier 3")], "default": 3},
+        {"name": "ExperienceInCurrentDomain", "label": "Experience in Current Domain (years)",
+         "kind": "range", "min": 0, "max": 7, "step": 1, "default": 3},
+        {"name": "EverBenched", "label": "Ever Benched (kept without project)", "kind": "select",
+         "options": opts(BENCHED), "default": 0},
+    ]},
+]
+ 
+ 
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
+def risk_info(p_leave: float) -> dict:
+    """p_leave in 0-100."""
+    if p_leave >= 60:
+        return {"level": "High Risk", "verdict": "Likely to Leave", "icon": "🚨", "color": "#f43f5e",
+                "msg": "This profile closely matches employees who left. Act early with a retention plan."}
+    if p_leave >= 35:
+        return {"level": "Medium Risk", "verdict": "Uncertain", "icon": "⚠️", "color": "#f59e0b",
+                "msg": "Mixed signals. Stay in touch and address any open concerns."}
+    return {"level": "Low Risk", "verdict": "Likely to Stay", "icon": "✅", "color": "#14b8a6",
+            "msg": "This profile matches employees who tend to stay. Keep engagement strong."}
+ 
+ 
+def build_tips(v: dict, p_leave: float) -> list:
+    tips = []
+    if int(v["EverBenched"]) == 1:
+        tips.append("🪑 Past bench time is a strong attrition signal, so assign meaningful projects.")
+    if int(v["PaymentTier"]) != 3:
+        tips.append("💰 Review compensation: this payment tier shows a higher leave rate.")
+    if int(v["JoiningYear"]) >= 2017:
+        tips.append("🌱 Recent joiners leave more often, so strengthen onboarding and mentoring.")
+    if CITY[int(v["City"])] == "Pune":
+        tips.append("📍 This location has shown higher attrition, so check local engagement.")
+    if int(v["ExperienceInCurrentDomain"]) <= 1:
+        tips.append("🎯 Offer clear growth paths and training early in the domain.")
+    if not tips:
+        tips.append("🤝 Keep up regular check-ins, recognition and career conversations.")
+    return tips[:4]
+ 
+ 
+# --------------------------------------------------------------------------
+# HTML template
+# --------------------------------------------------------------------------
+TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Retention Predictor</title>
+<title>Employee Attrition Predictor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --ink: #13234a;
-    --ink-soft: #2b3f73;
-    --teal: #0f9d8a;
-    --teal-soft: #dff5f1;
-    --amber: #f2a93b;
-    --coral: #e8553f;
-    --coral-soft: #fde8e3;
-    --paper: #f2f5fb;
-    --card: #ffffff;
-    --line: #dde3f0;
-    --text: #1c2540;
-    --muted: #6b7694;
+  :root{
+    --bg1:#06202b; --bg2:#14123a; --card:rgba(255,255,255,.07); --border:rgba(255,255,255,.14);
+    --text:#eef6f8; --muted:#9db8c2; --a1:#2dd4bf; --a2:#fb923c; --a3:#a78bfa;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: var(--paper);
-    color: var(--text);
-    min-height: 100vh;
-    line-height: 1.5;
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:'Outfit',system-ui,sans-serif;color:var(--text);min-height:100vh;padding:34px 16px 60px;
+    background:
+      radial-gradient(800px 480px at 0% 0%, rgba(45,212,191,.28), transparent 60%),
+      radial-gradient(800px 520px at 100% 5%, rgba(251,146,60,.22), transparent 60%),
+      radial-gradient(700px 500px at 50% 115%, rgba(167,139,250,.22), transparent 60%),
+      linear-gradient(160deg,var(--bg1),var(--bg2));
+    background-attachment:fixed;
   }
+  .wrap{max-width:980px;margin:0 auto}
+  header{text-align:center;margin-bottom:30px}
+  .badge{display:inline-block;padding:6px 16px;border-radius:999px;font-size:12px;font-weight:600;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--a1);
+    background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.35)}
+  h1{font-size:clamp(28px,5vw,46px);font-weight:800;margin:14px 0 8px;
+    background:linear-gradient(90deg,#fff,var(--a1) 45%,var(--a2));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  header p{color:var(--muted);max-width:560px;margin:0 auto;font-size:15px}
  
-  .shell {
-    display: grid;
-    grid-template-columns: 380px 1fr;
-    min-height: 100vh;
-  }
+  /* result */
+  .result{margin-bottom:28px;padding:30px;border-radius:24px;display:flex;gap:34px;align-items:center;
+    justify-content:center;flex-wrap:wrap;
+    background:linear-gradient(135deg,color-mix(in srgb,var(--rc) 20%,transparent),rgba(255,255,255,.04));
+    border:1px solid color-mix(in srgb,var(--rc) 55%,transparent);
+    box-shadow:0 0 60px color-mix(in srgb,var(--rc) 22%,transparent);animation:pop .5s ease}
+  @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
+  .ring{position:relative;width:190px;height:190px}
+  .ring svg{transform:rotate(-90deg)}
+  .ring .bg{stroke:rgba(255,255,255,.12)}
+  .ring .fg{stroke:var(--rc);stroke-linecap:round;stroke-dasharray:502;stroke-dashoffset:502;
+    animation:fill 1.2s ease forwards;filter:drop-shadow(0 0 8px var(--rc))}
+  @keyframes fill{to{stroke-dashoffset:calc(502 - 502 * var(--pct) / 100)}}
+  .ring .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .ring .num{font-size:42px;font-weight:800;line-height:1}
+  .ring .of{font-size:12px;color:var(--muted);margin-top:4px}
+  .info{max-width:440px}
+  .level{display:inline-block;font-size:13px;font-weight:700;padding:4px 14px;border-radius:999px;
+    background:var(--rc);color:#06121a;margin-bottom:10px}
+  .info h2{font-size:28px;margin-bottom:6px}
+  .info p.msg{color:#d3e4ea;font-size:14px;margin-bottom:14px}
+  .bars{margin-bottom:14px}
+  .bar-row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px}
+  .bar-row .n{width:50px;color:var(--muted)}
+  .track{flex:1;height:10px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden}
+  .fill{height:100%;border-radius:99px}
+  .bar-row .v{width:48px;text-align:right;font-weight:600}
+  .tips{list-style:none;display:grid;gap:8px}
+  .tips li{font-size:13px;padding:9px 12px;border-radius:12px;background:rgba(255,255,255,.07);
+    border:1px solid var(--border)}
  
-  /* ---------- left brand panel ---------- */
-  .brand {
-    background: linear-gradient(165deg, var(--ink) 0%, var(--ink-soft) 100%);
-    color: #fff;
-    padding: 56px 40px;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    position: relative;
-    overflow: hidden;
-  }
-  .brand::after {
-    content: "";
-    position: absolute;
-    width: 320px; height: 320px;
-    right: -140px; bottom: -120px;
-    border-radius: 50%;
-    border: 44px solid rgba(15, 157, 138, 0.35);
-  }
-  .logo {
-    display: inline-flex; align-items: center; gap: 10px;
-    font-weight: 700; font-size: 15px; letter-spacing: .2px;
-  }
-  .logo i {
-    width: 34px; height: 34px; border-radius: 10px;
-    background: var(--teal);
-    display: grid; place-items: center;
-    font-style: normal; font-weight: 800;
-  }
-  .brand h1 {
-    font-size: 36px; line-height: 1.15; font-weight: 800;
-    margin: 56px 0 18px;
-  }
-  .brand p { color: #c3cdea; font-size: 15px; max-width: 290px; }
-  .legend { display: grid; gap: 12px; margin-top: 36px; font-size: 14px; position: relative; z-index: 1; }
-  .legend div { display: flex; align-items: center; gap: 10px; color: #dfe6fb; }
-  .dot { width: 12px; height: 12px; border-radius: 50%; }
-  .dot.stay { background: var(--teal); }
-  .dot.leave { background: var(--coral); }
-  .foot { font-size: 12px; color: #93a0c8; position: relative; z-index: 1; }
+  .error{background:rgba(244,63,94,.15);border:1px solid rgba(244,63,94,.5);
+    padding:14px 18px;border-radius:14px;margin-bottom:20px}
  
-  /* ---------- right content ---------- */
-  .main { padding: 56px 64px; max-width: 900px; width: 100%; }
-  .main h2 { font-size: 24px; font-weight: 700; color: var(--ink); }
-  .main .sub { color: var(--muted); margin: 4px 0 28px; font-size: 14px; }
+  /* form */
+  form{display:grid;gap:20px}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:22px;
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+  .card h2{font-size:18px;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+  .field{margin-bottom:16px}.field:last-child{margin-bottom:0}
+  label{display:flex;justify-content:space-between;font-size:13px;font-weight:500;color:var(--muted);margin-bottom:7px}
+  label output{color:var(--a2);font-weight:700}
+  select{width:100%;padding:11px 12px;border-radius:12px;font:inherit;color:var(--text);
+    background:rgba(5,14,24,.6);border:1px solid var(--border);outline:none;transition:.2s}
+  select option{background:#10203a}
+  select:focus{border-color:var(--a1);box-shadow:0 0 0 3px rgba(45,212,191,.25)}
+  input[type=range]{width:100%;-webkit-appearance:none;height:6px;border-radius:99px;outline:none;
+    background:linear-gradient(90deg,var(--a1),var(--a2))}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;
+    background:#fff;border:3px solid var(--a2);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#fff;
+    border:3px solid var(--a2);cursor:pointer}
  
-  form.card {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 18px;
-    padding: 32px;
-    box-shadow: 0 10px 30px rgba(19, 35, 74, 0.06);
-  }
-  .group-title {
-    font-size: 13px; font-weight: 700; color: var(--teal);
-    margin-bottom: 14px;
-  }
-  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px 22px; margin-bottom: 28px; }
-  .field label { display: block; font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
-  .field input, .field select {
-    width: 100%; height: 46px; padding: 0 14px;
-    border: 1.5px solid var(--line); border-radius: 12px;
-    background: #fafbfe; color: var(--text);
-    font: inherit; font-size: 15px;
-    transition: border-color .15s, box-shadow .15s, background .15s;
-  }
-  .field input:focus, .field select:focus {
-    outline: none; border-color: var(--teal); background: #fff;
-    box-shadow: 0 0 0 4px rgba(15, 157, 138, 0.15);
-  }
-  .field small { color: var(--muted); font-size: 12px; }
- 
-  button {
-    width: 100%; height: 52px; border: 0; border-radius: 14px;
-    background: linear-gradient(90deg, var(--teal), #12b3a0);
-    color: #fff; font: inherit; font-weight: 700; font-size: 16px;
-    cursor: pointer;
-    transition: transform .12s, box-shadow .12s;
-    box-shadow: 0 8px 20px rgba(15, 157, 138, 0.28);
-  }
-  button:hover { transform: translateY(-1px); }
-  button:focus-visible { outline: 3px solid var(--amber); outline-offset: 2px; }
- 
-  /* ---------- result ---------- */
-  .result {
-    margin-top: 28px; padding: 28px 32px;
-    border-radius: 18px; border: 1px solid;
-    display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: center;
-  }
-  .result.stay  { background: var(--teal-soft);  border-color: #a9e3d9; }
-  .result.leave { background: var(--coral-soft); border-color: #f5bfb4; }
-  .badge {
-    width: 84px; height: 84px; border-radius: 50%;
-    display: grid; place-items: center;
-    font-size: 30px; font-weight: 800; color: #fff;
-  }
-  .stay .badge  { background: var(--teal); }
-  .leave .badge { background: var(--coral); }
-  .result h3 { font-size: 20px; font-weight: 800; color: var(--ink); }
-  .result p { color: var(--muted); font-size: 14px; margin-bottom: 14px; }
-  .bar { height: 12px; background: #fff; border-radius: 99px; overflow: hidden; display: flex; }
-  .bar span:first-child { background: var(--teal); }
-  .bar span:last-child  { background: var(--coral); }
-  .bar-labels { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; margin-top: 8px; }
-  .bar-labels .s { color: var(--teal); }
-  .bar-labels .l { color: var(--coral); }
- 
-  .error {
-    margin-top: 20px; padding: 14px 18px; border-radius: 12px;
-    background: #fff4e0; border: 1px solid #f7d79a; color: #8a5a00; font-size: 14px;
-  }
- 
-  @media (max-width: 900px) {
-    .shell { grid-template-columns: 1fr; }
-    .brand { padding: 32px 24px; }
-    .brand h1 { margin-top: 28px; font-size: 28px; }
-    .legend { margin: 24px 0 0; }
-    .foot { margin-top: 24px; }
-    .main { padding: 32px 20px; }
-  }
-  @media (max-width: 560px) {
-    .grid { grid-template-columns: 1fr; }
-    .result { grid-template-columns: 1fr; text-align: center; justify-items: center; }
-  }
+  .actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:6px}
+  button,.reset{padding:15px 38px;border-radius:14px;border:0;font:inherit;font-weight:700;font-size:16px;
+    cursor:pointer;transition:.2s;text-decoration:none;display:inline-block}
+  button{color:#06121a;background:linear-gradient(90deg,var(--a1),var(--a2));
+    box-shadow:0 10px 30px rgba(45,212,191,.3)}
+  button:hover{transform:translateY(-2px);box-shadow:0 14px 36px rgba(251,146,60,.4)}
+  .reset{color:var(--text);background:var(--card);border:1px solid var(--border)}
+  .reset:hover{background:rgba(255,255,255,.12)}
+  footer{text-align:center;color:var(--muted);font-size:12px;margin-top:34px;max-width:620px;
+    margin-left:auto;margin-right:auto}
 </style>
 </head>
 <body>
-<div class="shell">
+<div class="wrap">
+  <header>
+    <span class="badge">Naive Bayes · HR Analytics</span>
+    <h1>Employee Attrition Predictor</h1>
+    <p>Enter an employee's details to estimate whether they are likely to leave the company.</p>
+  </header>
  
-  <aside class="brand">
-    <div>
-      <span class="logo"><i>R</i> Retention Predictor</span>
-      <h1>Will this employee stay?</h1>
-      <p>Enter an employee's profile and the Naive Bayes model estimates the chance they leave within two years.</p>
-      <div class="legend">
-        <div><span class="dot stay"></span> Likely to stay</div>
-        <div><span class="dot leave"></span> Likely to leave</div>
-      </div>
+  {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
+ 
+  {% if result %}
+  <div class="result" style="--rc: {{ result.color }}; --pct: {{ result.p_leave }}">
+    <div class="ring">
+      <svg width="190" height="190" viewBox="0 0 190 190">
+        <circle class="bg" cx="95" cy="95" r="80" fill="none" stroke-width="14"/>
+        <circle class="fg" cx="95" cy="95" r="80" fill="none" stroke-width="14"/>
+      </svg>
+      <div class="center"><span class="num">{{ result.p_leave }}%</span><span class="of">chance of leaving</span></div>
     </div>
-    <div class="foot">Gaussian Naive Bayes &middot; scikit-learn</div>
-  </aside>
- 
-  <main class="main">
-    <h2>Employee profile</h2>
-    <p class="sub">All fields are required.</p>
- 
-    <form class="card" method="POST" action="/">
-      <div class="group-title">Background</div>
-      <div class="grid">
-        <div class="field">
-          <label for="education">Education</label>
-          <select id="education" name="education">
-            {% for o in education %}<option value="{{ o }}" {{ 'selected' if v.education == o }}>{{ o }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="field">
-          <label for="age">Age</label>
-          <input id="age" type="number" name="age" min="18" max="65" value="{{ v.age }}" required>
-        </div>
-        <div class="field">
-          <label for="gender">Gender</label>
-          <select id="gender" name="gender">
-            {% for o in gender %}<option value="{{ o }}" {{ 'selected' if v.gender == o }}>{{ o }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="field">
-          <label for="city">City</label>
-          <select id="city" name="city">
-            {% for o in city %}<option value="{{ o }}" {{ 'selected' if v.city == o }}>{{ o }}</option>{% endfor %}
-          </select>
-        </div>
+    <div class="info">
+      <span class="level">{{ result.icon }} {{ result.level }}</span>
+      <h2>{{ result.verdict }}</h2>
+      <p class="msg">{{ result.msg }}</p>
+      <div class="bars">
+        <div class="bar-row"><span class="n">Stay</span>
+          <div class="track"><div class="fill" style="width:{{ result.p_stay }}%;background:#14b8a6"></div></div>
+          <span class="v">{{ result.p_stay }}%</span></div>
+        <div class="bar-row"><span class="n">Leave</span>
+          <div class="track"><div class="fill" style="width:{{ result.p_leave }}%;background:#f43f5e"></div></div>
+          <span class="v">{{ result.p_leave }}%</span></div>
       </div>
+      <ul class="tips">{% for t in result.tips %}<li>{{ t }}</li>{% endfor %}</ul>
+    </div>
+  </div>
+  {% endif %}
  
-      <div class="group-title">Role at the company</div>
-      <div class="grid">
+  <form method="POST" action="/">
+    <div class="grid2">
+    {% for s in sections %}
+      <div class="card">
+        <h2>{{ s.title }}</h2>
+        {% for f in s.fields %}
         <div class="field">
-          <label for="joining_year">Joining year</label>
-          <input id="joining_year" type="number" name="joining_year" min="2000" max="2030" value="{{ v.joining_year }}" required>
+          {% set val = values.get(f.name, f.default) %}
+          {% if f.kind == 'select' %}
+            <label for="{{ f.name }}">{{ f.label }}</label>
+            <select id="{{ f.name }}" name="{{ f.name }}">
+              {% for code, text in f.options %}
+              <option value="{{ code }}" {{ 'selected' if code|string == val|string }}>{{ text }}</option>
+              {% endfor %}
+            </select>
+          {% else %}
+            <label for="{{ f.name }}">{{ f.label }}<output id="o_{{ f.name }}">{{ val }}</output></label>
+            <input type="range" id="{{ f.name }}" name="{{ f.name }}" min="{{ f.min }}" max="{{ f.max }}"
+                   step="{{ f.step }}" value="{{ val }}"
+                   oninput="document.getElementById('o_{{ f.name }}').textContent=this.value">
+          {% endif %}
         </div>
-        <div class="field">
-          <label for="payment_tier">Payment tier</label>
-          <select id="payment_tier" name="payment_tier">
-            <option value="1" {{ 'selected' if v.payment_tier|string == '1' }}>Tier 1 (highest)</option>
-            <option value="2" {{ 'selected' if v.payment_tier|string == '2' }}>Tier 2</option>
-            <option value="3" {{ 'selected' if v.payment_tier|string == '3' }}>Tier 3 (lowest)</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="experience">Years of experience in current domain</label>
-          <input id="experience" type="number" name="experience" min="0" max="40" value="{{ v.experience }}" required>
-        </div>
-        <div class="field">
-          <label for="ever_benched">Ever benched</label>
-          <select id="ever_benched" name="ever_benched">
-            {% for o in benched %}<option value="{{ o }}" {{ 'selected' if v.ever_benched == o }}>{{ o }}</option>{% endfor %}
-          </select>
-          <small>Kept without a project for a month or more.</small>
-        </div>
+        {% endfor %}
       </div>
- 
-      <button type="submit">Predict retention</button>
-    </form>
- 
-    {% if error %}
-      <div class="error">{{ error }}</div>
-    {% endif %}
- 
-    {% if result %}
-      <section class="result {{ 'leave' if result.leaves else 'stay' }}">
-        <div class="badge">{{ result.headline_pct }}%</div>
-        <div>
-          <h3>{{ 'Likely to leave' if result.leaves else 'Likely to stay' }}</h3>
-          <p>
-            {% if result.leaves %}
-              The model sees a {{ result.leave_pct }}% chance this employee leaves within two years.
-            {% else %}
-              The model sees a {{ result.stay_pct }}% chance this employee stays beyond two years.
-            {% endif %}
-          </p>
-          <div class="bar">
-            <span style="width: {{ result.stay_pct }}%"></span>
-            <span style="width: {{ result.leave_pct }}%"></span>
-          </div>
-          <div class="bar-labels">
-            <span class="s">Stay {{ result.stay_pct }}%</span>
-            <span class="l">Leave {{ result.leave_pct }}%</span>
-          </div>
-        </div>
-      </section>
-    {% endif %}
-  </main>
- 
+    {% endfor %}
+    </div>
+    <div class="actions">
+      <button type="submit">🔍 Predict Attrition</button>
+      <a class="reset" href="/">↺ Reset</a>
+    </div>
+  </form>
+  <footer>Built with Flask &amp; scikit-learn. This is a statistical estimate to support HR planning,
+    so it should not be the sole basis for any decision about an individual.</footer>
 </div>
 </body>
 </html>
 """
  
  
-def render(values, result=None, error=None):
-    return render_template_string(
-        PAGE,
-        v=values,
-        result=result,
-        error=error,
-        education=EDUCATION.keys(),
-        city=CITY.keys(),
-        gender=GENDER.keys(),
-        benched=BENCHED.keys(),
-    )
- 
- 
+# --------------------------------------------------------------------------
+# Routes
+# --------------------------------------------------------------------------
 @app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method == "GET":
-        return render(DEFAULTS)
+    result, error, values = None, None, {}
  
-    form = request.form
-    values = {k: form.get(k, DEFAULTS[k]) for k in DEFAULTS}
+    if request.method == "POST":
+        values = request.form.to_dict()
+        try:
+            v = {name: float(values[name]) for name in FEATURES}
+            X = pd.DataFrame([v])[FEATURES]
  
-    try:
-        row = {
-            "Education": EDUCATION[values["education"]],
-            "JoiningYear": int(values["joining_year"]),
-            "City": CITY[values["city"]],
-            "PaymentTier": int(values["payment_tier"]),
-            "Age": int(values["age"]),
-            "Gender": GENDER[values["gender"]],
-            "EverBenched": BENCHED[values["ever_benched"]],
-            "ExperienceInCurrentDomain": int(values["experience"]),
-        }
-    except (KeyError, ValueError):
-        return render(values, error="Please check your inputs. Every field needs a valid value.")
+            proba = model.predict_proba(X)[0]
+            p_leave = round(float(proba[CLASSES.index(1)]) * 100, 1)
+            p_stay = round(100 - p_leave, 1)
  
-    X = pd.DataFrame([row])[FEATURES]
-    proba = model.predict_proba(X)[0]
-    leave_p = float(proba[list(model.classes_).index(1)])
-    stay_p = 1.0 - leave_p
+            result = {"p_leave": p_leave, "p_stay": p_stay,
+                      "tips": build_tips(v, p_leave), **risk_info(p_leave)}
+        except (KeyError, ValueError) as e:
+            error = f"Please fill every field with valid values ({e})."
+        except Exception as e:  # noqa: BLE001
+            error = f"Prediction failed: {e}"
  
-    leave_pct = round(leave_p * 100, 1)
-    stay_pct = round(stay_p * 100, 1)
-    leaves = leave_p >= 0.5
- 
-    result = {
-        "leaves": leaves,
-        "leave_pct": leave_pct,
-        "stay_pct": stay_pct,
-        "headline_pct": round(leave_pct if leaves else stay_pct),
-    }
-    return render(values, result=result)
+    return render_template_string(
+        TEMPLATE, sections=SECTIONS, values=values, result=result, error=error
+    )
  
  
 if __name__ == "__main__":
     app.run(debug=True)
- 
