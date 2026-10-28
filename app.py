@@ -12,7 +12,7 @@ app = Flask(__name__)
 # --------------------------------------------------------------------------
 # Load model
 # --------------------------------------------------------------------------
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "navie.pkl")
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naive.pkl")
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
  
